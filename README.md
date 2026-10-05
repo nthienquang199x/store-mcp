@@ -13,6 +13,8 @@ Listings are stored as plain files. Pull them, edit the text, review the diff, t
 | `store_pull(app, platform, screenshots=False, overwrite=False)` | Download the live listing to local files. Refuses to overwrite existing local files unless `overwrite=True` |
 | `store_diff(app, platform)` | Diff the live listing (`---`) against local files (`+++`) |
 | `store_push(app, platform, dry_run=True, screenshots=False, app_version="")` | Upload local files to the store |
+| `iap_pull(app, platform, overwrite=False)` | Download one-time in-app purchases to JSON files |
+| `iap_push(app, platform, product_id="", dry_run=True)` | Create or update in-app purchases from JSON files |
 
 `platform` is `ios` or `android`.
 
@@ -21,12 +23,40 @@ Listings are stored as plain files. Pull them, edit the text, review the diff, t
 - Never uploads binaries and never submits for review.
 - iOS without `app_version` edits the current editable version and never creates a new one.
 
+`iap_push` safety:
+- `dry_run=True` by default and lists the planned changes.
+- Never deletes products or listings.
+- Changing `price_usd` resets every region from the USD price (Apple equalization / Play conversion).
+
+## In-app purchases
+
+Consumable and non-consumable products, one shared format for both stores
+(App Store Connect API and Play `monetization.onetimeproducts`, no fastlane):
+
+```json
+{
+  "product_id": "coins_500",
+  "type": "consumable",
+  "reference_name": "500 Coins",
+  "price_usd": "2.99",
+  "listings": {"en-US": {"title": "500 Coins", "description": "A stack of coins."}},
+  "review_note": "Open Store > Coins.",
+  "review_screenshot": "coins_500.png",
+  "family_sharable": false
+}
+```
+
+`type`, `reference_name`, `review_note`, `review_screenshot` (path relative to the JSON file)
+and `family_sharable` are iOS only. `state` is read-only. To create a product, add a new file and push.
+New iOS products need a review screenshot and are submitted for review together with the next app version.
+
 ## Local layout
 
 ```
 <root>/<app>/android/<locale>/title.txt, short_description.txt, full_description.txt, images/...
 <root>/<app>/ios/metadata/<locale>/name.txt, subtitle.txt, description.txt, keywords.txt, ...
 <root>/<app>/ios/screenshots/...
+<root>/<app>/iap/{ios,android}/<product_id>.json
 ```
 
 ## Setup
@@ -79,6 +109,4 @@ Key lookup order: app-level key, then the app's account, then the top-level defa
 
 ## Not supported yet
 
-In-app purchases and subscriptions, build upload, release and rollout management,
-and customer reviews. fastlane has no support for IAP, so these will use the
-App Store Connect API and Google Play Developer API directly.
+Subscriptions, build upload, release and rollout management, and customer reviews.

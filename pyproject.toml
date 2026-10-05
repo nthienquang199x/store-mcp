@@ -2,7 +2,7 @@
 name = "store-mcp"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["mcp>=2.3"]
+dependencies = ["mcp>=2.3", "httpx", "pyjwt[crypto]"]
 
 [project.scripts]
 store-mcp = "server:main"
@@ -11,4 +11,4 @@ store-mcp = "server:main"
 package = true
 
 [tool.setuptools]
-py-modules = ["server"]
+py-modules = ["server", "iap"]

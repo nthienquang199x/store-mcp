@@ -6,12 +6,17 @@ import os
 import shutil
 import subprocess
 import tempfile
+import json
+import logging
 import tomllib
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+import iap
+
 mcp = MCPServer("store")
+logging.getLogger("httpx").setLevel(logging.WARNING)
 CONFIG = Path(os.environ.get("STORE_CONFIG", "~/.config/store-mcp/apps.toml")).expanduser()
 ENV = {
     **os.environ,
@@ -156,6 +161,63 @@ def store_push(app: str, platform: str, dry_run: bool = True, screenshots: bool 
     cmd += ["-w", str(local / "screenshots"), "--overwrite_screenshots", "true"] if screenshots \
         else ["--skip_screenshots", "true"]
     return run(cmd)
+
+
+def iap_setup(app: str, platform: str):
+    c, app_id, local = resolve(app, platform)
+    key = c["asc_key" if platform == "ios" else "play_json_key"]
+    return (*iap.remote_products(platform, path(key), app_id), local.parent / "iap" / platform)
+
+
+@mcp.tool()
+def iap_pull(app: str, platform: str, overwrite: bool = False) -> str:
+    """Download one-time in-app purchases (consumable / non-consumable) to
+    <root>/<app>/iap/<platform>/<product_id>.json. Skips files that exist unless overwrite=True.
+    Subscriptions are not included."""
+    _, _, remote, folder = iap_setup(app, platform)
+    folder.mkdir(parents=True, exist_ok=True)
+    written, skipped = [], []
+    for pid, p in remote.items():
+        f = folder / f"{pid}.json"
+        if f.exists() and not overwrite:
+            skipped.append(pid)
+            continue
+        f.write_text(json.dumps(iap.to_file(p), indent=2, ensure_ascii=False) + "\n")
+        written.append(pid)
+    return (f"{folder}\nwritten: {', '.join(written) or 'none'}"
+            + (f"\nskipped (exists, use overwrite=True): {', '.join(skipped)}" if skipped else ""))
+
+
+@mcp.tool()
+def iap_push(app: str, platform: str, product_id: str = "", dry_run: bool = True) -> str:
+    """Create or update one-time in-app purchases from local json files (all, or one product_id).
+
+    File format: see iap_pull output, or the iap.py docstring. To create a product, write a new
+    <product_id>.json with product_id, type, reference_name, price_usd and listings.
+    dry_run=True (default) only lists the planned changes. Never deletes products or listings.
+    Price changes reset all regions from price_usd (Apple / Play conversion).
+    iOS: new products need a review_screenshot and are submitted with the next app version.
+    """
+    c, store_app, remote, folder = iap_setup(app, platform)
+    files = [folder / f"{product_id}.json"] if product_id else sorted(folder.glob("*.json"))
+    if not files or not files[0].exists():
+        return f"no product files in {folder}"
+    steps = []
+    for f in files:
+        local = json.loads(f.read_text())
+        steps += iap.plan(platform, c, store_app, local, remote.get(local["product_id"]), folder)
+    if not steps:
+        return "store already matches local files"
+    if dry_run:
+        return "dry run, planned changes:\n" + "\n".join(f"- {d}" for d, _ in steps)
+    done = []
+    for d, action in steps:
+        try:
+            action()
+        except Exception as e:
+            return "\n".join([*(f"done: {x}" for x in done), f"FAILED: {d}\n{e}"])
+        done.append(d)
+    return "\n".join(f"done: {x}" for x in done)
 
 
 def main():
