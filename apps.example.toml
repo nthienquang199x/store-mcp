@@ -1,0 +1,25 @@
+# Copy to ~/.config/store-mcp/apps.toml (or point STORE_CONFIG at it).
+
+# Where pulled metadata lives: <root>/<app>/{ios,android}/...
+root = "~/store"
+
+# Default keys, used when an app sets no account.
+# asc_key is fastlane api_key_path JSON:
+# {"key_id": "...", "issuer_id": "...", "key": "-----BEGIN PRIVATE KEY-----\n...", "in_house": false}
+play_json_key = "~/.config/play-store-mcp/service-account.json"
+asc_key = "~/.config/store-mcp/asc_key.json"
+
+# Extra accounts. Set either key or both; missing ones fall back to the defaults above.
+[accounts.client_a]
+play_json_key = "~/.config/store-mcp/client_a/play.json"
+asc_key = "~/.config/store-mcp/client_a/asc.json"
+
+[apps.myapp]          # uses default keys
+ios = "com.example.myapp"
+android = "com.example.myapp"
+
+[apps.clientapp]
+account = "client_a"
+ios = "com.clienta.app"
+android = "com.clienta.app"
+# asc_key = "..."     # app-level key overrides the account
