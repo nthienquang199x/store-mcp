@@ -14,6 +14,8 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 import iap
+import insights
+import release
 
 mcp = MCPServer("store")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -208,8 +210,21 @@ def iap_push(app: str, platform: str, product_id: str = "", dry_run: bool = True
         steps += iap.plan(platform, c, store_app, local, remote.get(local["product_id"]), folder)
     if not steps:
         return "store already matches local files"
+    return run_steps(steps, dry_run)
+
+
+def api(app: str, platform: str):
+    """Return (http client, store app id: ASC numeric id or Play package)."""
+    c, app_id, _ = resolve(app, platform)
+    if platform == "ios":
+        client = iap.asc_client(path(c["asc_key"]))
+        return client, iap.asc_app_id(client, app_id)
+    return iap.play_client(path(c["play_json_key"])), app_id
+
+
+def run_steps(steps: list, dry_run: bool) -> str:
     if dry_run:
-        return "dry run, planned changes:\n" + "\n".join(f"- {d}" for d, _ in steps)
+        return "dry run, planned:\n" + "\n".join(f"- {d}" for d, _ in steps)
     done = []
     for d, action in steps:
         try:
@@ -218,6 +233,136 @@ def iap_push(app: str, platform: str, product_id: str = "", dry_run: bool = True
             return "\n".join([*(f"done: {x}" for x in done), f"FAILED: {d}\n{e}"])
         done.append(d)
     return "\n".join(f"done: {x}" for x in done)
+
+
+@mcp.tool()
+def build_upload(app: str, platform: str, file: str, track: str = "internal",
+                 release_status: str = "completed", changelog: str = "", groups: str = "") -> str:
+    """Upload a build to testing. Never goes to production directly (use android_release / ios_release).
+
+    android: .aab/.apk to `track` (internal, alpha, beta or a custom closed track).
+      release_status: completed, or draft for apps that were never published.
+    ios: .ipa to TestFlight. changelog = "What to Test". groups = comma-separated TestFlight
+      groups to distribute to after processing (waits for processing).
+    """
+    c, app_id, _ = resolve(app, platform)
+    f = path(file)
+    if not Path(f).is_file():
+        return f"file not found: {f}"
+    if platform == "android":
+        if track == "production":
+            return "refusing to upload straight to production; upload to a testing track, then promote"
+        return run(["fastlane", "supply", "--package_name", app_id, "--json_key", path(c["play_json_key"]),
+                    "--aab" if f.endswith(".aab") else "--apk", f, "--track", track,
+                    "--release_status", release_status, "--skip_upload_metadata", "true",
+                    "--skip_upload_images", "true", "--skip_upload_screenshots", "true",
+                    "--skip_upload_changelogs", "true"])
+    cmd = ["fastlane", "pilot", "upload", "--api_key_path", path(c["asc_key"]), "-a", app_id, "--ipa", f]
+    if changelog:
+        cmd += ["--changelog", changelog]
+    cmd += ["--groups", groups, "--distribute_external", "false"] if groups \
+        else ["--skip_waiting_for_build_processing", "true", "--skip_submission", "true"]
+    return run(cmd)
+
+
+@mcp.tool()
+def release_status(app: str, platform: str) -> str:
+    """Android: every track with its releases (version codes, status, rollout %).
+    iOS: recent App Store versions with their state, and the latest builds."""
+    c, app_id = api(app, platform)
+    return release.ios_status(c, app_id) if platform == "ios" else release.android_status(c, app_id)
+
+
+@mcp.tool()
+def android_release(app: str, action: str, track: str, to_track: str = "", rollout: float = 1.0,
+                    dry_run: bool = True) -> str:
+    """Change a Google Play release. dry_run=True (default) only shows the change.
+
+    action:
+      promote: copy the latest release of `track` to `to_track` (rollout < 1 = staged rollout)
+      rollout: set the staged rollout of `track` to `rollout` (1.0 completes it); resumes a halted one
+      halt:    halt the staged rollout on `track`
+    """
+    c, package = api(app, "android")
+    desc, rel, target = release.android_plan(c, package, action, track, to_track, rollout)
+    return run_steps([(desc, lambda: release.android_apply(c, package, rel, target))], dry_run)
+
+
+@mcp.tool()
+def ios_release(app: str, action: str, version: str = "", build: str = "", dry_run: bool = True) -> str:
+    """Change an App Store release. dry_run=True (default) only shows the steps.
+
+    action:
+      submit:   create `version` if missing, attach the latest processed build (or `build` number),
+                and submit for App Review. Metadata/screenshots must already be complete.
+      release:  release an approved version that is waiting for manual release
+      pause | resume | complete: control the phased release
+    version defaults to the newest App Store version (required for submit).
+    """
+    c, app_id = api(app, "ios")
+    return run_steps(release.ios_plan(c, app_id, action, version, build), dry_run)
+
+
+@mcp.tool()
+def reviews_list(app: str, platform: str, limit: int = 20, unanswered: bool = False) -> str:
+    """Latest customer reviews with their id, rating, text and existing reply.
+    Google Play only returns reviews from the last 7 days."""
+    c, app_id = api(app, platform)
+    if platform == "ios":
+        return release.ios_reviews(c, app_id, limit, unanswered)
+    return release.android_reviews(c, app_id, limit, unanswered)
+
+
+@mcp.tool()
+def review_reply(app: str, platform: str, review_id: str, text: str) -> str:
+    """Publicly reply to a customer review (replaces an existing reply on Google Play)."""
+    c, app_id = api(app, platform)
+    if platform == "ios":
+        return release.ios_reply(c, review_id, text)
+    return release.android_reply(c, app_id, review_id, text)
+
+
+@mcp.tool()
+def vitals(app: str, platform: str) -> str:
+    """App health. android: 28-day crash and ANR rates plus top crash/ANR issues
+    (needs the Google Play Developer Reporting API enabled for the service account's project).
+    ios: Xcode metrics (launch time, hangs, memory, battery, disk) and the latest build's
+    diagnostic signatures. Apple has no crash counts in its API."""
+    c, app_id = api(app, platform)
+    if platform == "ios":
+        return insights.ios_vitals(c, app_id)
+    conf, package, _ = resolve(app, platform)
+    return insights.android_vitals(iap.play_client(path(conf["play_json_key"]), "playdeveloperreporting"), package)
+
+
+@mcp.tool()
+def testers(app: str, platform: str, action: str = "list", group: str = "", emails: str = "") -> str:
+    """Manage testers. action: list | add | remove. emails: comma-separated.
+    ios: TestFlight. list without group = all groups with counts; group = TestFlight group name.
+    android: group = closed-testing track name; emails are Google Group addresses
+    (the Play API cannot manage individual tester emails or internal-testing lists)."""
+    c, app_id = api(app, platform)
+    mails = [e.strip() for e in emails.split(",") if e.strip()]
+    if action != "list" and not mails:
+        return "emails required"
+    if platform == "ios":
+        return insights.ios_testers(c, app_id, action, group, mails)
+    return insights.android_testers(c, app_id, action, group, mails)
+
+
+@mcp.tool()
+def subscriptions_list(app: str, platform: str) -> str:
+    """Read-only list of auto-renewing subscriptions: product id, period, US price, state."""
+    c, app_id = api(app, platform)
+    return insights.ios_subscriptions(c, app_id) if platform == "ios" else insights.android_subscriptions(c, app_id)
+
+
+@mcp.tool()
+def orders(app: str, order_id: str = "", voided_days: int = 30) -> str:
+    """Google Play orders. With order_id (GPA.xxxx): order details. Without: refunded / voided
+    purchases from the last `voided_days` days (max 30). iOS orders are not supported yet."""
+    c, package = api(app, "android")
+    return insights.android_orders(c, package, order_id, voided_days)
 
 
 def main():

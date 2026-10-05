@@ -15,6 +15,16 @@ Listings are stored as plain files. Pull them, edit the text, review the diff, t
 | `store_push(app, platform, dry_run=True, screenshots=False, app_version="")` | Upload local files to the store |
 | `iap_pull(app, platform, overwrite=False)` | Download one-time in-app purchases to JSON files |
 | `iap_push(app, platform, product_id="", dry_run=True)` | Create or update in-app purchases from JSON files |
+| `build_upload(app, platform, file, track="internal", ...)` | Upload an .aab/.apk to a testing track or an .ipa to TestFlight (never production) |
+| `release_status(app, platform)` | Play tracks and releases, or App Store versions and latest builds |
+| `android_release(app, action, track, to_track="", rollout=1.0, dry_run=True)` | `promote` a release to another track, change staged `rollout`, or `halt` it |
+| `ios_release(app, action, version="", build="", dry_run=True)` | `submit` a version for review, `release` an approved version, `pause` / `resume` / `complete` a phased release |
+| `reviews_list(app, platform, limit=20, unanswered=False)` | Latest customer reviews (Play API only returns the last 7 days) |
+| `review_reply(app, platform, review_id, text)` | Publicly reply to a review |
+| `vitals(app, platform)` | Android: 28-day crash/ANR rates and top issues. iOS: Xcode metrics and diagnostic signatures |
+| `testers(app, platform, action="list", group="", emails="")` | TestFlight groups and testers; Play closed-track Google Groups |
+| `subscriptions_list(app, platform)` | Subscriptions with period, US price and state (read-only) |
+| `orders(app, order_id="", voided_days=30)` | Google Play order details, or refunded/voided purchases |
 
 `platform` is `ios` or `android`.
 
@@ -22,6 +32,10 @@ Listings are stored as plain files. Pull them, edit the text, review the diff, t
 - `dry_run=True` by default. Android runs Play's `validate_only`; iOS returns the diff.
 - Never uploads binaries and never submits for review.
 - iOS without `app_version` edits the current editable version and never creates a new one.
+
+Release safety: `android_release` and `ios_release` are dry runs by default, and `build_upload`
+refuses the Play production track. Production goes through `android_release promote`
+or `ios_release submit`.
 
 `iap_push` safety:
 - `dry_run=True` by default and lists the planned changes.
@@ -82,6 +96,10 @@ Set `STORE_CONFIG` to use a config file somewhere else.
 
 Keys are read from the config only and are never passed as tool arguments.
 
+Extra Google setup for some tools:
+- `vitals` (Android): enable the **Google Play Developer Reporting API** in the service account's Cloud project.
+- `orders` (Android): grant the service account **View financial data, orders, and cancellation survey responses** in Play Console.
+
 ### Multiple accounts
 
 ```toml
@@ -109,4 +127,5 @@ Key lookup order: app-level key, then the app's account, then the top-level defa
 
 ## Not supported yet
 
-Subscriptions, build upload, release and rollout management, and customer reviews.
+Creating or editing subscriptions, iOS order lookup (needs an App Store Server API key),
+crash counts on iOS (not in the App Store Connect API).

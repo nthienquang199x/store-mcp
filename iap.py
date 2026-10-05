@@ -219,10 +219,10 @@ def ios_plan(c: httpx.Client, app_id: str, local: dict, remote: dict | None, fol
 
 # ---------------------------------------------------------------- Google Play
 
-def play_client(key_path: str) -> httpx.Client:
+def play_client(key_path: str, scope: str = "androidpublisher") -> httpx.Client:
     k = json.loads(Path(key_path).read_text())
     now = int(time.time())
-    assertion = jwt.encode({"iss": k["client_email"], "scope": "https://www.googleapis.com/auth/androidpublisher",
+    assertion = jwt.encode({"iss": k["client_email"], "scope": f"https://www.googleapis.com/auth/{scope}",
                             "aud": k["token_uri"], "iat": now, "exp": now + 3600},
                            k["private_key"], algorithm="RS256")
     tok = httpx.post(k["token_uri"], data={"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",

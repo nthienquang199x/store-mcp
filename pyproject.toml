@@ -11,4 +11,4 @@ store-mcp = "server:main"
 package = true
 
 [tool.setuptools]
-py-modules = ["server", "iap"]
+py-modules = ["server", "iap", "release", "insights"]
