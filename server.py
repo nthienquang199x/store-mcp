@@ -2,6 +2,8 @@
 
 Listings live as files (<root>/<app>/{ios,android}); edit them, then push.
 """
+import functools
+import inspect
 import os
 import shutil
 import subprocess
@@ -12,13 +14,44 @@ import tomllib
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
+from mcp.types import ToolAnnotations
 
+import admob
+import ads
+import browser
 import iap
 import insights
 import release
 
 mcp = MCPServer("store")
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def tool(**kw):
+    """mcp.tool that passes failures on to the model: the SDK hides any error that isn't a ToolError."""
+    def wrap(fn):
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def run(*a, **k):
+                try:
+                    return await fn(*a, **k)
+                except ToolError:
+                    raise
+                except Exception as e:
+                    raise ToolError(f"{type(e).__name__}: {e}") from e
+        else:
+            @functools.wraps(fn)
+            def run(*a, **k):
+                try:
+                    return fn(*a, **k)
+                except ToolError:
+                    raise
+                except Exception as e:
+                    raise ToolError(f"{type(e).__name__}: {e}") from e
+        return mcp.tool(**kw)(run)
+    return wrap
 CONFIG = Path(os.environ.get("STORE_CONFIG", "~/.config/store-mcp/apps.toml")).expanduser()
 ENV = {
     **os.environ,
@@ -94,7 +127,7 @@ def diff(a: Path, b: Path) -> str:
     return r.stdout[-20000:] or "no differences"
 
 
-@mcp.tool()
+@tool()
 def store_apps() -> str:
     """List configured apps and their iOS bundle id / Android package name."""
     c = cfg()
@@ -102,7 +135,7 @@ def store_apps() -> str:
                      for name, a in c.get("apps", {}).items()) or f"no apps in {CONFIG}"
 
 
-@mcp.tool()
+@tool()
 def store_pull(app: str, platform: str, screenshots: bool = False, overwrite: bool = False) -> str:
     """Download the current store listing to local files and return the local path.
 
@@ -121,7 +154,7 @@ def store_pull(app: str, platform: str, screenshots: bool = False, overwrite: bo
     return f"pulled to {local}\n\n{log[-2000:]}"
 
 
-@mcp.tool()
+@tool()
 def store_diff(app: str, platform: str) -> str:
     """Unified diff: live store listing (---) vs local files (+++). Text only for iOS."""
     c, app_id, local = resolve(app, platform)
@@ -133,7 +166,7 @@ def store_diff(app: str, platform: str) -> str:
         return diff(remote, local)
 
 
-@mcp.tool()
+@tool()
 def store_push(app: str, platform: str, dry_run: bool = True, screenshots: bool = False,
                app_version: str = "") -> str:
     """Upload local listing files to the store. Never uploads binaries or submits for review.
@@ -171,7 +204,7 @@ def iap_setup(app: str, platform: str):
     return (*iap.remote_products(platform, path(key), app_id), local.parent / "iap" / platform)
 
 
-@mcp.tool()
+@tool()
 def iap_pull(app: str, platform: str, overwrite: bool = False) -> str:
     """Download one-time in-app purchases (consumable / non-consumable) to
     <root>/<app>/iap/<platform>/<product_id>.json. Skips files that exist unless overwrite=True.
@@ -190,7 +223,7 @@ def iap_pull(app: str, platform: str, overwrite: bool = False) -> str:
             + (f"\nskipped (exists, use overwrite=True): {', '.join(skipped)}" if skipped else ""))
 
 
-@mcp.tool()
+@tool()
 def iap_push(app: str, platform: str, product_id: str = "", dry_run: bool = True) -> str:
     """Create or update one-time in-app purchases from local json files (all, or one product_id).
 
@@ -235,7 +268,7 @@ def run_steps(steps: list, dry_run: bool) -> str:
     return "\n".join(f"done: {x}" for x in done)
 
 
-@mcp.tool()
+@tool()
 def build_upload(app: str, platform: str, file: str, track: str = "internal",
                  release_status: str = "completed", changelog: str = "", groups: str = "") -> str:
     """Upload a build to testing. Never goes to production directly (use android_release / ios_release).
@@ -265,7 +298,7 @@ def build_upload(app: str, platform: str, file: str, track: str = "internal",
     return run(cmd)
 
 
-@mcp.tool()
+@tool()
 def release_status(app: str, platform: str) -> str:
     """Android: every track with its releases (version codes, status, rollout %).
     iOS: recent App Store versions with their state, and the latest builds."""
@@ -273,7 +306,7 @@ def release_status(app: str, platform: str) -> str:
     return release.ios_status(c, app_id) if platform == "ios" else release.android_status(c, app_id)
 
 
-@mcp.tool()
+@tool()
 def android_release(app: str, action: str, track: str, to_track: str = "", rollout: float = 1.0,
                     dry_run: bool = True) -> str:
     """Change a Google Play release. dry_run=True (default) only shows the change.
@@ -288,7 +321,7 @@ def android_release(app: str, action: str, track: str, to_track: str = "", rollo
     return run_steps([(desc, lambda: release.android_apply(c, package, rel, target))], dry_run)
 
 
-@mcp.tool()
+@tool()
 def ios_release(app: str, action: str, version: str = "", build: str = "", dry_run: bool = True) -> str:
     """Change an App Store release. dry_run=True (default) only shows the steps.
 
@@ -303,7 +336,7 @@ def ios_release(app: str, action: str, version: str = "", build: str = "", dry_r
     return run_steps(release.ios_plan(c, app_id, action, version, build), dry_run)
 
 
-@mcp.tool()
+@tool()
 def reviews_list(app: str, platform: str, limit: int = 20, unanswered: bool = False) -> str:
     """Latest customer reviews with their id, rating, text and existing reply.
     Google Play only returns reviews from the last 7 days."""
@@ -313,7 +346,7 @@ def reviews_list(app: str, platform: str, limit: int = 20, unanswered: bool = Fa
     return release.android_reviews(c, app_id, limit, unanswered)
 
 
-@mcp.tool()
+@tool()
 def review_reply(app: str, platform: str, review_id: str, text: str) -> str:
     """Publicly reply to a customer review (replaces an existing reply on Google Play)."""
     c, app_id = api(app, platform)
@@ -322,7 +355,7 @@ def review_reply(app: str, platform: str, review_id: str, text: str) -> str:
     return release.android_reply(c, app_id, review_id, text)
 
 
-@mcp.tool()
+@tool()
 def vitals(app: str, platform: str) -> str:
     """App health. android: 28-day crash and ANR rates plus top crash/ANR issues
     (needs the Google Play Developer Reporting API enabled for the service account's project).
@@ -335,7 +368,7 @@ def vitals(app: str, platform: str) -> str:
     return insights.android_vitals(iap.play_client(path(conf["play_json_key"]), "playdeveloperreporting"), package)
 
 
-@mcp.tool()
+@tool()
 def testers(app: str, platform: str, action: str = "list", group: str = "", emails: str = "") -> str:
     """Manage testers. action: list | add | remove. emails: comma-separated.
     ios: TestFlight. list without group = all groups with counts; group = TestFlight group name.
@@ -350,19 +383,172 @@ def testers(app: str, platform: str, action: str = "list", group: str = "", emai
     return insights.android_testers(c, app_id, action, group, mails)
 
 
-@mcp.tool()
+@tool()
 def subscriptions_list(app: str, platform: str) -> str:
     """Read-only list of auto-renewing subscriptions: product id, period, US price, state."""
     c, app_id = api(app, platform)
     return insights.ios_subscriptions(c, app_id) if platform == "ios" else insights.android_subscriptions(c, app_id)
 
 
-@mcp.tool()
+@tool()
 def orders(app: str, order_id: str = "", voided_days: int = 30) -> str:
     """Google Play orders. With order_id (GPA.xxxx): order details. Without: refunded / voided
     purchases from the last `voided_days` days (max 30). iOS orders are not supported yet."""
     c, package = api(app, "android")
     return insights.android_orders(c, package, order_id, voided_days)
+
+
+# ---------------------------------------------------------------- Google Ads
+
+READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+WRITE = ToolAnnotations(destructive_hint=True, open_world_hint=True)
+
+
+def ads_api(customer_id: str = ""):
+    c = cfg()
+    a = c.get("ads", {})
+    if not a.get("developer_token"):
+        raise ValueError(f"add an [ads] section with developer_token to {CONFIG}")
+    key = a.get("credentials") or c.get("play_json_key")
+    if not key:
+        raise ValueError("set [ads].credentials (or top-level play_json_key) to a service account JSON")
+    c, base = ads.client(a, key)
+    return c, base, a, ads.digits(customer_id or a.get("customer_id", ""))
+
+
+@tool(annotations=READ)
+def ads_accounts() -> str:
+    """Google Ads accounts reachable with the configured credentials (MCC children if login_customer_id is set)."""
+    c, base, a, _ = ads_api()
+    return ads.accounts(c, base, a)
+
+
+@tool(annotations=READ)
+def ads_query(gaql: str, customer_id: str = "") -> str:
+    """Run a Google Ads Query Language (GAQL) query. customer_id defaults to [ads].customer_id.
+    Money fields are in micros (1_000_000 = 1 unit of account currency). Rows include resourceName,
+    which ads_mutate update/remove operations need. Example:
+    SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type,
+      campaign_budget.amount_micros, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS"""
+    c, base, _, cid = ads_api(customer_id)
+    if not cid:
+        return "customer_id required (or set [ads].customer_id)"
+    return ads.query(c, base, cid, gaql)
+
+
+@tool(annotations=WRITE)
+def ads_mutate(operations: list[dict], customer_id: str = "", dry_run: bool = True,
+               allow_enable: bool = False) -> str:
+    """Create / update / remove Google Ads resources atomically via GoogleAdsService.Mutate (REST JSON,
+    camelCase). operations = list of MutateOperation, e.g.
+      {"campaignBudgetOperation": {"create": {"resourceName": "customers/CID/campaignBudgets/-1",
+          "name": "Echoes budget", "amountMicros": "5000000", "deliveryMethod": "STANDARD",
+          "explicitlyShared": false}}}
+      {"campaignOperation": {"create": {"name": "Echoes Android installs",
+          "advertisingChannelType": "MULTI_CHANNEL", "advertisingChannelSubType": "APP_CAMPAIGN",
+          "campaignBudget": "customers/CID/campaignBudgets/-1",
+          "appCampaignSetting": {"appId": "com.gamma.echoes", "appStore": "GOOGLE_APP_STORE",
+              "biddingStrategyGoalType": "OPTIMIZE_INSTALLS_TARGET_INSTALL_COST"},
+          "targetCpa": {"targetCpaMicros": "500000"},
+          "containsEuPoliticalAdvertising": "DOES_NOT_CONTAIN_EU_POLITICAL_ADVERTISING"}}}
+      {"campaignOperation": {"update": {"resourceName": "customers/CID/campaigns/123", "status": "PAUSED"},
+          "updateMask": "status"}}
+    Negative ids (-1, -2) are temp ids to link resources created in the same call. App campaigns then
+    need an adGroupOperation and an adGroupAdOperation with appAd {headlines, descriptions, images}.
+    dry_run=true validates only (validateOnly) — always dry-run first and show the user.
+    New campaigns are forced to PAUSED; setting a campaign to ENABLED needs allow_enable=true,
+    which must only be passed after the user explicitly approves spending."""
+    c, base, _, cid = ads_api(customer_id)
+    if not cid:
+        return "customer_id required (or set [ads].customer_id)"
+    return ads.mutate(c, base, cid, operations, dry_run, allow_enable)
+
+
+# ---------------------------------------------------------------- AdMob
+
+def admob_api(publisher_id: str = ""):
+    a = cfg().get("admob", {})
+    key = Path(path(a.get("credentials", "~/.config/store-mcp/google_oauth.json")))
+    if not key.exists():
+        raise ValueError(f"no AdMob login at {key}; run: store-mcp-login <oauth-desktop-client.json>")
+    c = admob.client(str(key))
+    return c, admob.account(c, publisher_id or a.get("publisher_id", ""))
+
+
+@tool(annotations=READ)
+def admob_inventory(publisher_id: str = "") -> str:
+    """AdMob account (currency, time zone), its apps (app id, platform, store id, approval state) and each
+    app's ad units (ad unit id, format, name). publisher_id defaults to [admob].publisher_id or the login's account."""
+    c, parent = admob_api(publisher_id)
+    return admob.inventory(c, parent)
+
+
+@tool(annotations=READ)
+def admob_report(start: str, end: str, metrics: list[str], dimensions: list[str] = ["DATE"],
+                 kind: str = "network", filters: dict[str, list[str]] = {}, sort: str = "",
+                 limit: int = 200, publisher_id: str = "") -> str:
+    """AdMob report. kind: network (AdMob network earnings) | mediation (per ad source) | campaign
+    (AdMob app campaigns, v1beta, max 30 days). Dates YYYY-MM-DD inclusive, in the account time zone.
+    filters: {dimension: [values]}, e.g. {"APP": ["ca-app-pub-xxx~yyy"]} or {"COUNTRY": ["US"]}.
+    sort: "<metric or dimension> desc|asc". Money metrics are returned in account currency units.
+    network dims: DATE MONTH WEEK AD_UNIT APP AD_TYPE COUNTRY FORMAT PLATFORM MOBILE_OS_VERSION
+      GMA_SDK_VERSION APP_VERSION_NAME SERVING_RESTRICTION
+    network metrics: AD_REQUESTS CLICKS ESTIMATED_EARNINGS IMPRESSIONS IMPRESSION_CTR IMPRESSION_RPM
+      MATCHED_REQUESTS MATCH_RATE SHOW_RATE
+    mediation adds dims AD_SOURCE AD_SOURCE_INSTANCE MEDIATION_GROUP and metric OBSERVED_ECPM
+      (no IMPRESSION_RPM / SHOW_RATE)."""
+    c, parent = admob_api(publisher_id)
+    return admob.report(c, parent, kind, start, end, dimensions, metrics, filters, sort, limit)
+
+
+# AdMob's mediation and write APIs are allowlisted per account, so changes go through the web UI
+# in a headless Camoufox that reuses the session from store-mcp-browser-login.
+UI = browser.Browser()
+
+
+@tool(annotations=WRITE)
+async def admob_ui_open(path: str = "/v2/home") -> str:
+    """Open an AdMob web page headless and return its accessibility tree (roles, names, text).
+    path examples: /v2/home, /v2/apps, /v2/mediation/groups. Full https://admob.google.com URLs also work.
+    Workflow: open -> read tree -> admob_ui_fill / admob_ui_click with Playwright selectors built from the
+    tree, e.g. 'role=button[name="Add ad unit"]', 'role=textbox[name="Ad unit name"]', 'text=Rewarded'.
+    Prefer reading data with admob_inventory / admob_report; use the UI only for changes."""
+    url = path if path.startswith("https://") else f"https://admob.google.com{path}"
+    return await UI.open(url)
+
+
+@tool(annotations=WRITE)
+async def admob_ui_click(selector: str, confirm: bool = False) -> str:
+    """Click an element (Playwright selector) and return the new accessibility tree. Buttons that commit
+    a change (Save, Create, Done, Delete, Enable...) are refused unless confirm=true: first take
+    admob_ui_screenshot, show the user exactly what will be saved, and confirm only after they approve."""
+    return await UI.click(selector, confirm)
+
+
+@tool(annotations=WRITE)
+async def admob_ui_fill(selector: str, value: str) -> str:
+    """Type into a text field, or pick an option label in a <select>. Returns the new accessibility tree."""
+    return await UI.fill(selector, value)
+
+
+@tool(annotations=READ)
+async def admob_ui_screenshot() -> Image:
+    """Screenshot of the current AdMob page (show it to the user before confirming a change)."""
+    return Image(data=await UI.screenshot(), format="png")
+
+
+@tool(annotations=READ)
+async def admob_ui_page() -> str:
+    """Accessibility tree of the current page without acting (e.g. after a dialog animates in)."""
+    return await UI.snapshot()
+
+
+@tool(annotations=READ)
+async def admob_ui_close() -> str:
+    """Close the headless browser (needed before running store-mcp-browser-login)."""
+    await UI.close()
+    return "closed"
 
 
 def main():

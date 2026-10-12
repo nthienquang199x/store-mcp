@@ -231,6 +231,20 @@ def play_client(key_path: str, scope: str = "androidpublisher") -> httpx.Client:
     return httpx.Client(headers={"Authorization": f"Bearer {tok.json()['access_token']}"}, timeout=60)
 
 
+def google_client(key_path: str, scope: str) -> httpx.Client:
+    """Service account JSON, or authorized_user JSON (client_id, client_secret, refresh_token)."""
+    key_path = str(Path(key_path).expanduser())
+    creds = json.loads(Path(key_path).read_text())
+    if creds.get("type") == "service_account":
+        return play_client(key_path, scope)
+    tok = httpx.post("https://oauth2.googleapis.com/token", data={
+        "grant_type": "refresh_token", "client_id": creds["client_id"],
+        "client_secret": creds.get("client_secret", ""), "refresh_token": creds["refresh_token"]}, timeout=30)
+    if tok.status_code >= 400:
+        raise RuntimeError(f"token refresh failed ({tok.text[:300]}); run store-mcp-login again")
+    return httpx.Client(headers={"Authorization": f"Bearer {tok.json()['access_token']}"}, timeout=60)
+
+
 def money(m: dict) -> str:
     return str((Decimal(m.get("units", "0")) + Decimal(m.get("nanos", 0)) / Decimal(10**9)).normalize())
 

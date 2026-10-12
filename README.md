@@ -25,6 +25,12 @@ Listings are stored as plain files. Pull them, edit the text, review the diff, t
 | `testers(app, platform, action="list", group="", emails="")` | TestFlight groups and testers; Play closed-track Google Groups |
 | `subscriptions_list(app, platform)` | Subscriptions with period, US price and state (read-only) |
 | `orders(app, order_id="", voided_days=30)` | Google Play order details, or refunded/voided purchases |
+| `ads_accounts()` | Google Ads accounts under the configured manager (MCC) account |
+| `ads_query(gaql, customer_id="")` | Run any GAQL query: campaigns, ad groups, ads, metrics (money in micros) |
+| `ads_mutate(operations, customer_id="", dry_run=True, allow_enable=False)` | Create / edit / remove campaigns, budgets, ad groups, ads atomically. New campaigns are forced to `PAUSED`; enabling a campaign needs `allow_enable=True` |
+| `admob_inventory(publisher_id="")` | AdMob account, apps and their ad units |
+| `admob_report(start, end, metrics, dimensions=["DATE"], kind="network", filters={}, sort="", limit=200)` | Network, mediation or campaign report |
+| `admob_ui_open / _click / _fill / _page / _screenshot / _close` | Drive the AdMob web UI in a headless Camoufox (ad units, mediation groups, anything without API access). Commit buttons need `confirm=True` |
 
 `platform` is `ios` or `android`.
 
@@ -124,6 +130,57 @@ android = "com.clienta.app"
 ```
 
 Key lookup order: app-level key, then the app's account, then the top-level default.
+
+### Google Ads
+
+1. **Developer token**: in a manager (MCC) account, Admin → API Center.
+2. **Production access**: in the Google Cloud project that owns your OAuth client, open the Google Ads
+   API page → *Upgrade access level* and apply for Explorer access (granted within minutes). Until
+   then calls fail with `CLOUD_PROJECT_NOT_APPROVED_FOR_PRODUCTION`.
+3. **Credentials**: service accounts get `NOT_ADS_USER`, so use your own login: run `store-mcp-login`
+   (see AdMob below), which carries the Google Ads scope, and point `credentials` at its file.
+4. Add to `apps.toml`:
+   ```toml
+   [ads]
+   developer_token = "..."
+   login_customer_id = "123-456-7890"   # MCC id, when the account sits under a manager
+   customer_id = "234-567-8901"         # default account for ads_query / ads_mutate
+   credentials = "~/.config/store-mcp/google_oauth.json"   # defaults to play_json_key
+   # api_version = "v25"
+   ```
+   A new ads account answers `CUSTOMER_NOT_ENABLED` until its first campaign and billing are set up.
+
+### AdMob
+
+AdMob does not accept service accounts, so it uses your own Google login.
+
+1. Enable the *AdMob API* in a Google Cloud project, configure the OAuth consent screen (External,
+   add yourself as a test user; publish it, or refresh tokens expire after 7 days) and create an
+   OAuth client of type *Desktop app*. Download its JSON.
+2. Sign in (opens a browser, saves `~/.config/store-mcp/google_oauth.json`):
+   ```sh
+   uv run --directory /path/to/store-mcp store-mcp-login ~/Downloads/client_secret_....json
+   ```
+   The same login also carries the Google Ads scope, so `[ads].credentials` may point to this file.
+3. Optional, in `apps.toml`:
+   ```toml
+   [admob]
+   publisher_id = "pub-1234567890123456"   # default: the login's first account
+   # credentials = "~/.config/store-mcp/google_oauth.json"
+   ```
+
+### AdMob web UI (Camoufox)
+
+AdMob's mediation and write APIs are allowlisted per account, so changes go through the web UI in a
+headless [Camoufox](https://camoufox.com) with a fixed fingerprint and a persistent profile
+(`~/.config/store-mcp/browser`).
+
+```sh
+uv run --directory /path/to/store-mcp camoufox fetch                 # once, downloads the browser
+uv run --directory /path/to/store-mcp store-mcp-browser-login        # sign in to Google, close the window
+```
+
+Run the login again whenever a tool reports that the session expired (call `admob_ui_close` first).
 
 ## Not supported yet
 

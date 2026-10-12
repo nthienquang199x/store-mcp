@@ -2,13 +2,20 @@
 name = "store-mcp"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["mcp>=2.3", "httpx", "pyjwt[crypto]"]
+dependencies = [
+    "mcp>=2.3",
+    "httpx",
+    "pyjwt[crypto]",
+    "camoufox>=0.5.8",
+]
 
 [project.scripts]
 store-mcp = "server:main"
+store-mcp-login = "admob:login"
+store-mcp-browser-login = "browser:login"
 
 [tool.uv]
 package = true
 
 [tool.setuptools]
-py-modules = ["server", "iap", "release", "insights"]
+py-modules = ["server", "admob", "ads", "browser", "iap", "release", "insights"]
